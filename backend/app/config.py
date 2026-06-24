@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Redis / Celery settings
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
 
+    # Embedding model settings
+    EMBEDDING_MODEL: str = Field(default="BAAI/bge-large-en-v1.5")
+
     # Load from .env file at the workspace root or backend root
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),

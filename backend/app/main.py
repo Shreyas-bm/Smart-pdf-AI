@@ -7,6 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.api.auth import router as auth_router
+from app.api.documents import router as documents_router
 
 # Configure logging
 logging.basicConfig(
@@ -32,6 +33,7 @@ app.add_middleware(
 
 # Include Routers
 app.include_router(auth_router)
+app.include_router(documents_router)
 
 # Custom Exception Handlers
 @app.exception_handler(StarletteHTTPException)
