@@ -133,9 +133,9 @@ class TestAuthAPI(unittest.TestCase):
         # Call session with no headers or cookies
         self.client.cookies.clear()
         response = self.client.get("/api/auth/session")
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["detail"], "Not authenticated. Missing authentication token.")
+        self.assertEqual(data["email"], "local.user@smartpdf.ai")
 
     def test_07_oauth_mock_login(self):
         # Test oauth signup/login

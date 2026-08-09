@@ -1,52 +1,96 @@
+import os
+import sys
 import uuid
 import logging
 from typing import List, Dict, Any
-import numpy as np
+import chromadb
 from sqlalchemy.orm import Session
 from app.db.models import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
+# Detect if we are running under unit tests
+IS_TESTING = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("TESTING") == "True"
+
+if IS_TESTING:
+    logger.info("Initializing Ephemeral ChromaDB client for testing...")
+    chroma_client = chromadb.EphemeralClient()
+else:
+    CHROMA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../chroma_db"))
+    os.makedirs(CHROMA_PATH, exist_ok=True)
+    logger.info(f"Initializing Persistent ChromaDB client at {CHROMA_PATH}...")
+    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+
+def get_collection():
+    """
+    Get or create the ChromaDB collection for document chunks.
+    """
+    return chroma_client.get_or_create_collection(
+        name="pdf_document_chunks",
+        metadata={"hnsw:space": "cosine"}
+    )
+
 def save_document_chunks(db: Session, document_id: uuid.UUID, chunks_data: List[Dict[str, Any]]) -> None:
     """
-    Saves a batch of document chunks and their vector embeddings to the database.
-    
-    Args:
-        db: SQLAlchemy database session.
-        document_id: The UUID of the PDFDocument these chunks belong to.
-        chunks_data: A list of dictionaries representing chunks:
-            [
-                {
-                    "chunk_index": int,
-                    "text_content": str,
-                    "page_number": int,
-                    "embedding": List[float]
-                },
-                ...
-            ]
+    Saves a batch of document chunks to SQLite/PostgreSQL (for structured metadata queries)
+    and saves their text + vector embeddings to ChromaDB.
     """
+    # 1. Save chunks metadata to relational database (for summarization, bullets, etc.)
     try:
-        # Clear existing chunks for this document if any (to allow re-processing)
+        # Clear existing SQL chunks for this document if any
         db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
         
-        # Bulk insert new chunks
         chunks = []
         for c in chunks_data:
             chunk = DocumentChunk(
                 document_id=document_id,
                 chunk_index=c["chunk_index"],
                 text_content=c["text_content"],
-                page_number=c["page_number"],
-                embedding=c["embedding"]
+                page_number=c["page_number"]
             )
             chunks.append(chunk)
             
         db.bulk_save_objects(chunks)
         db.commit()
-        logger.info(f"Successfully saved {len(chunks)} chunks for document {document_id}.")
+        logger.info(f"Successfully saved {len(chunks)} chunks to SQL DB for document {document_id}.")
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to save document chunks for {document_id}: {e}", exc_info=True)
+        logger.error(f"Failed to save document chunks to SQL DB for {document_id}: {e}", exc_info=True)
+        raise e
+
+    # 2. Save embeddings and chunks to ChromaDB
+    try:
+        collection = get_collection()
+        
+        # Delete existing chunks for this document in ChromaDB
+        collection.delete(where={"document_id": str(document_id)})
+        
+        ids = []
+        documents = []
+        metadatas = []
+        embeddings = []
+        
+        for c in chunks_data:
+            chunk_id = f"{document_id}_{c['chunk_index']}"
+            ids.append(chunk_id)
+            documents.append(c["text_content"])
+            metadatas.append({
+                "document_id": str(document_id),
+                "chunk_index": c["chunk_index"],
+                "page_number": c["page_number"]
+            })
+            embeddings.append(c["embedding"])
+            
+        if ids:
+            collection.add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings
+            )
+            logger.info(f"Successfully saved {len(chunks_data)} chunks to ChromaDB for document {document_id}.")
+    except Exception as e:
+        logger.error(f"Failed to save document chunks to ChromaDB for {document_id}: {e}", exc_info=True)
         raise e
 
 def similarity_search(
@@ -56,53 +100,50 @@ def similarity_search(
     limit: int = 5
 ) -> List[DocumentChunk]:
     """
-    Performs a similarity search using cosine distance.
-    If the database dialect is SQLite, runs similarity search in-memory via numpy.
-    If PostgreSQL, runs pgvector database-level query.
-    
-    Args:
-        db: SQLAlchemy database session.
-        document_id: The UUID of the PDFDocument to search within.
-        query_embedding: The 1024-dimensional query vector.
-        limit: Max number of relevant chunks to return.
-        
-    Returns:
-        A list of DocumentChunk SQLAlchemy model instances.
+    Performs a similarity search using ChromaDB cosine distance.
+    Returns matched DocumentChunk models.
     """
     try:
-        dialect_name = db.bind.dialect.name
-    except Exception:
-        # Fallback to sqlite if cannot detect dialect
-        dialect_name = "sqlite"
-
-    if dialect_name == "sqlite":
-        logger.debug("Executing similarity search fallback on SQLite database.")
-        # Retrieve all chunks for the document
-        chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).all()
-        chunks_with_emb = [c for c in chunks if c.embedding is not None]
-        if not chunks_with_emb:
-            return []
+        collection = get_collection()
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=limit,
+            where={"document_id": str(document_id)}
+        )
+        
+        chunks = []
+        if results and "documents" in results and results["documents"] and len(results["documents"][0]) > 0:
+            docs_list = results["documents"][0]
+            meta_list = results["metadatas"][0]
+            ids_list = results["ids"][0]
             
-        q_vec = np.array(query_embedding, dtype=np.float32)
-        q_norm = np.linalg.norm(q_vec)
-        if q_norm == 0:
-            return []
-            
-        def calculate_cosine_distance(chunk: DocumentChunk) -> float:
-            c_vec = np.array(chunk.embedding, dtype=np.float32)
-            c_norm = np.linalg.norm(c_vec)
-            if c_norm == 0:
-                return 1.0
-            similarity = np.dot(q_vec, c_vec) / (q_norm * c_norm)
-            return float(1.0 - similarity)
-            
-        chunks_with_emb.sort(key=calculate_cosine_distance)
-        return chunks_with_emb[:limit]
-    else:
-        logger.debug("Executing similarity search on PostgreSQL pgvector database.")
-        # PostgreSQL pgvector similarity search
+            for idx in range(len(docs_list)):
+                metadata = meta_list[idx]
+                chunk = DocumentChunk(
+                    id=uuid.uuid4(),
+                    document_id=uuid.UUID(metadata["document_id"]),
+                    chunk_index=metadata["chunk_index"],
+                    text_content=docs_list[idx],
+                    page_number=metadata["page_number"]
+                )
+                chunks.append(chunk)
+                
+        logger.debug(f"ChromaDB search retrieved {len(chunks)} chunks for document {document_id}.")
+        return chunks
+    except Exception as e:
+        logger.error(f"Failed to search similarity in ChromaDB for document {document_id}: {e}", exc_info=True)
+        # Fallback to local SQL chunks if ChromaDB fails
         return db.query(DocumentChunk).filter(
             DocumentChunk.document_id == document_id
-        ).order_by(
-            DocumentChunk.embedding.cosine_distance(query_embedding)
         ).limit(limit).all()
+
+def delete_document_vectors(document_id: uuid.UUID) -> None:
+    """
+    Deletes all vector embeddings and chunks for a document from ChromaDB.
+    """
+    try:
+        collection = get_collection()
+        collection.delete(where={"document_id": str(document_id)})
+        logger.info(f"Successfully deleted ChromaDB vectors for document {document_id}.")
+    except Exception as e:
+        logger.error(f"Failed to delete ChromaDB vectors for document {document_id}: {e}", exc_info=True)

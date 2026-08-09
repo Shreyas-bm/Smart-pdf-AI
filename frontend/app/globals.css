@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0B0B0F;
+  --surface: #12121A;
+  --surface-border: #1E1E2A;
+  --accent-purple: #7C5CFF;
+  --accent-blue: #00D4FF;
+  --font-inter: 'Inter', sans-serif;
+}
+
+body {
+  background-color: var(--background);
+  color: #F3F4F6;
+  font-family: var(--font-inter);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Custom Glassmorphism Card Style */
+.glass-card {
+  background: rgba(18, 18, 26, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card-hover:hover {
+  border-color: rgba(124, 92, 255, 0.4);
+  box-shadow: 0 0 25px rgba(124, 92, 255, 0.25), 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+  transform: translateY(-2px);
+}
+
+/* Gradient Text Effect */
+.gradient-text {
+  background: linear-gradient(135deg, #7C5CFF 0%, #00D4FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gradient-text-alt {
+  background: linear-gradient(135deg, #FF52D9 0%, #7C5CFF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Gradient Button */
+.btn-gradient {
+  background: linear-gradient(135deg, #7C5CFF 0%, #00D4FF 100%);
+  color: white;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 20px rgba(124, 92, 255, 0.4);
+}
+
+.btn-gradient:hover {
+  box-shadow: 0 6px 30px rgba(0, 212, 255, 0.6);
+  transform: scale(1.02);
+}
+
+/* Shimmer Loading Skeleton */
+.shimmer-skeleton {
+  background: linear-gradient(90deg, #12121A 25%, #1E1E2A 50%, #12121A 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s infinite linear;
+}
+
+/* Custom Modern Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0B0B0F;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1E1E2A;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #7C5CFF;
+}
+
+/* 3D Flashcard Flip Styling */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.transform-style-3d {
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}

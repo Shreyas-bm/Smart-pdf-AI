@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import String, Integer, ForeignKey, Text, DateTime, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
 
 class Base(DeclarativeBase):
     pass
@@ -46,7 +45,6 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text_content: Mapped[str] = mapped_column(Text, nullable=False)
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding: Mapped[Optional[List[float]]] = mapped_column(Vector(1024), nullable=True)
 
     document: Mapped["PDFDocument"] = relationship(back_populates="chunks")
 

@@ -30,6 +30,7 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
     db: Session = SessionLocal()
     doc_uuid = uuid.UUID(document_id)
     
+    keep_local_file = False
     try:
         # Retrieve PDFDocument
         db_document = db.query(PDFDocument).filter(PDFDocument.id == doc_uuid).first()
@@ -63,6 +64,7 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
             logger.warning(f"Storage upload failed, fallback to mock path: {storage_err}")
             # Fallback for local development when MinIO is not running
             db_document.file_url = f"mock-s3://{s3_object_name}"
+            keep_local_file = True
             
         # 3. Extract text content page-by-page
         logger.info(f"Extracting text from PDF document {document_id}")
@@ -123,13 +125,16 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
         return False
         
     finally:
-        # 7. Cleanup local temp file
+        # 7. Cleanup local temp file if S3 upload was successful, otherwise keep it for local download
         if os.path.exists(local_file_path):
-            try:
-                os.remove(local_file_path)
-                logger.info(f"Cleaned up temporary file {local_file_path}")
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to clean up temporary file {local_file_path}: {cleanup_err}")
+            if not keep_local_file:
+                try:
+                    os.remove(local_file_path)
+                    logger.info(f"Cleaned up temporary file {local_file_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to clean up temporary file {local_file_path}: {cleanup_err}")
+            else:
+                logger.info(f"Preserving local file {local_file_path} as fallback for frontend download/viewing")
         db.close()
         
     return True

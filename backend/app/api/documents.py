@@ -1,3 +1,5 @@
+from PIL.Image import logger
+from app.services.storage import StorageService
 import os
 import uuid
 from typing import List
@@ -176,6 +178,72 @@ def delete_document(
             # Log and proceed so DB record can still be cleared
             logger.error(f"Failed to delete {doc.file_url} from storage on document deletion: {e}")
             
+    # Delete from ChromaDB vector store
+    try:
+        from app.db.vector_store import delete_document_vectors
+        delete_document_vectors(document_id)
+    except Exception as e:
+        logger.error(f"Failed to delete ChromaDB vectors on document deletion: {e}")
+
     db.delete(doc)
     db.commit()
     return {"detail": "Document successfully deleted."}
+
+from fastapi.responses import FileResponse, RedirectResponse
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Serve the actual PDF file content.
+    If the document uses local mock-s3, returns the PDF from temp_uploads.
+    Otherwise, generates and redirects to a presigned S3 download URL.
+    """
+    doc = db.query(PDFDocument).filter(
+        PDFDocument.id == document_id,
+        PDFDocument.user_id == current_user.id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or access denied."
+        )
+        
+    temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../temp_uploads"))
+    temp_file_path = os.path.join(temp_dir, f"{document_id}.pdf")
+
+    # If it is mock-s3 or empty url, try to serve from local temp_uploads
+    if not doc.file_url or doc.file_url.startswith("mock-s3://"):
+        if os.path.exists(temp_file_path):
+            return FileResponse(
+                path=temp_file_path,
+                filename=doc.filename,
+                media_type="application/pdf"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF source file was not found on the server."
+            )
+    else:
+        # Try to generate pre-signed URL from S3 compatible store
+        try:
+            storage = StorageService()
+            presigned_url = storage.generate_presigned_url(doc.file_url)
+            return RedirectResponse(url=presigned_url)
+        except Exception as e:
+            logger.error(f"Failed to generate pre-signed URL, attempting local file: {e}")
+            if os.path.exists(temp_file_path):
+                return FileResponse(
+                    path=temp_file_path,
+                    filename=doc.filename,
+                    media_type="application/pdf"
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve file from S3 and local fallback not found."
+            )

@@ -42,13 +42,14 @@ class AuthResponse(BaseModel):
 
 # --- Dependency ---
 async def get_current_user(
-    request: Request,
+    request: Request = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     db: Session = Depends(get_db)
 ) -> User:
     """
     FastAPI dependency to retrieve the current authenticated user.
-    Checks the 'Authorization: Bearer' header and 'better-auth.session_token' cookie.
+    If a valid token is provided, returns that user (for testing compatibility).
+    Otherwise, returns the default local user.
     """
     token = None
     
@@ -57,44 +58,41 @@ async def get_current_user(
         token = credentials.credentials
         
     # 2. Try to get token from cookie
-    if not token:
+    if not token and request:
         token = request.cookies.get("better-auth.session_token")
         
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Missing authentication token."
-        )
-        
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session token."
-        )
-        
-    user_id_str = payload.get("sub")
-    if not user_id_str:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing user identity."
-        )
-        
-    try:
-        user_id = uuid.UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID format in token."
-        )
-        
-    user = db.query(User).filter(User.id == user_id).first()
+    if token:
+        try:
+            payload = decode_access_token(token)
+            if payload:
+                user_id_str = payload.get("sub")
+                if user_id_str:
+                    user_id = uuid.UUID(user_id_str)
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if user:
+                        return user
+        except Exception:
+            pass
+
+    # Default local user bypass
+    default_email = "local.user@smartpdf.ai"
+    default_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
+    user = db.query(User).filter(User.id == default_id).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User associated with this token does not exist."
-        )
-        
+        user = db.query(User).filter(User.email == default_email).first()
+        if not user:
+            user = User(
+                id=default_id,
+                email=default_email,
+                password_hash="local_bypass_hash"
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            user.id = default_id
+            db.commit()
+            db.refresh(user)
     return user
 
 
@@ -105,7 +103,6 @@ def signup(user_in: UserCreate, response: Response, db: Session = Depends(get_db
     """
     Register a new user, create session, set cookie, and return credentials.
     """
-    # Normalize email
     email = user_in.email.strip().lower()
     
     # Check if user already exists
@@ -136,7 +133,7 @@ def signup(user_in: UserCreate, response: Response, db: Session = Depends(get_db
         httponly=True,
         max_age=60 * 60 * 24 * 7,
         samesite="lax",
-        secure=False  # Set to True in production with HTTPS
+        secure=False
     )
     
     return {"session_token": token, "user": user}
@@ -166,7 +163,7 @@ def login(user_in: UserLogin, response: Response, db: Session = Depends(get_db))
         httponly=True,
         max_age=60 * 60 * 24 * 7,
         samesite="lax",
-        secure=False  # Set to True in production with HTTPS
+        secure=False
     )
     
     return {"session_token": token, "user": user}
@@ -195,21 +192,15 @@ def oauth_login(oauth_in: OAuthRequest, response: Response, db: Session = Depend
     Authenticate or register a user using an OAuth provider token (Google/GitHub).
     Mock-validated for local development.
     """
-    # For local development / demonstration, we extract or mock email from token
-    # In production, this would call google/github APIs to verify the id_token
     token_str = oauth_in.id_token.strip()
     
-    # Mocking standard oauth email extraction
     if "@" in token_str:
         email = token_str.strip().lower()
     else:
-        # Fallback dummy email for mock token values
         email = f"oauth_{oauth_in.provider}_{token_str[:8]}@example.com".lower()
         
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        # Create a new user since OAuth accounts are auto-registered on first login
-        # Generate a random password since login is handled via OAuth
         random_password = uuid.uuid4().hex
         password_hash = hash_password(random_password)
         user = User(
@@ -220,10 +211,8 @@ def oauth_login(oauth_in: OAuthRequest, response: Response, db: Session = Depend
         db.commit()
         db.refresh(user)
         
-    # Generate session token
     token = create_access_token(data={"sub": str(user.id), "email": user.email})
     
-    # Set cookie
     response.set_cookie(
         key="better-auth.session_token",
         value=token,

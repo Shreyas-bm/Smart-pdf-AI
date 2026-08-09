@@ -8,6 +8,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import settings
 from app.api.auth import router as auth_router
 from app.api.documents import router as documents_router
+from app.api.summaries import router as summaries_router
+from app.api.bullets import router as bullets_router
+from app.api.questions import router as questions_router
+from app.api.chat import router as chat_router
 
 # Configure logging
 logging.basicConfig(
@@ -15,6 +19,17 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+from app.db.session import engine
+from app.db.models import Base
+
+# Auto-create tables for SQLite development/testing
+try:
+    logger.info("Auto-creating database tables if they do not exist...")
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables auto-created successfully.")
+except Exception as db_err:
+    logger.warning(f"Database auto-creation bypassed or failed: {db_err}")
 
 app = FastAPI(
     title="SmartPDF AI API",
@@ -34,6 +49,10 @@ app.add_middleware(
 # Include Routers
 app.include_router(auth_router)
 app.include_router(documents_router)
+app.include_router(summaries_router)
+app.include_router(bullets_router)
+app.include_router(questions_router)
+app.include_router(chat_router)
 
 # Custom Exception Handlers
 @app.exception_handler(StarletteHTTPException)

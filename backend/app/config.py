@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # Embedding model settings
     EMBEDDING_MODEL: str = Field(default="BAAI/bge-large-en-v1.5")
 
+    # LLM settings
+    LLM_PROVIDER: str = Field(default="auto")  # auto, openai, ollama, mock
+    OPENAI_API_KEY: Optional[str] = Field(default=None)
+    OPENAI_BASE_URL: Optional[str] = Field(default=None)
+    OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
+    LLM_MODEL: str = Field(default="gpt-4o-mini")
+
     # Load from .env file at the workspace root or backend root
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
