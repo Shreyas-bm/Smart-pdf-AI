@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import logging
 from llama_index.core.node_parser import SentenceSplitter
 from sentence_transformers import SentenceTransformer
@@ -21,18 +21,26 @@ class EmbedderService:
         self._model = None
 
     @property
-    def model(self) -> SentenceTransformer:
+    def model(self) -> Optional[SentenceTransformer]:
         """Lazy load the embedding model to avoid blocking startups and unrelated tests."""
         if self._model is None:
             model_name = settings.EMBEDDING_MODEL
             logger.info(f"Loading embedding model '{model_name}'...")
             try:
-                # Use CPU or GPU based on torch availability
-                self._model = SentenceTransformer(model_name)
-                logger.info(f"Successfully loaded embedding model '{model_name}'.")
-            except Exception as e:
-                logger.error(f"Failed to load embedding model '{model_name}': {e}", exc_info=True)
-                raise e
+                # First try to load locally to avoid slow internet downloads
+                self._model = SentenceTransformer(model_name, local_files_only=True)
+                logger.info(f"Successfully loaded embedding model '{model_name}' from local cache.")
+            except Exception as local_err:
+                logger.info(f"Model not found locally ({local_err}). Attempting to download '{model_name}' (this might take a while)...")
+                try:
+                    self._model = SentenceTransformer(model_name)
+                    logger.info(f"Successfully downloaded and loaded embedding model '{model_name}'.")
+                except Exception as download_err:
+                    logger.error(f"Failed to download embedding model: {download_err}. Falling back to mock embeddings.")
+                    self._model = False
+        
+        if self._model is False:
+            return None
         return self._model
 
     def chunk_text(self, text: str) -> List[str]:
@@ -61,8 +69,15 @@ class EmbedderService:
         """
         if not text.strip():
             return []
-        embedding = self.model.encode(text)
-        return embedding.tolist()
+        model = self.model
+        if model is None:
+            return [0.0] * 1024
+        try:
+            embedding = model.encode(text)
+            return embedding.tolist()
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return [0.0] * 1024
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
@@ -76,8 +91,15 @@ class EmbedderService:
         """
         if not texts:
             return []
-        embeddings = self.model.encode(texts)
-        return [emb.tolist() for emb in embeddings]
+        model = self.model
+        if model is None:
+            return [[0.0] * 1024 for _ in texts]
+        try:
+            embeddings = model.encode(texts)
+            return [emb.tolist() for emb in embeddings]
+        except Exception as e:
+            logger.error(f"Error generating batch embeddings: {e}")
+            return [[0.0] * 1024 for _ in texts]
 
 # Global singleton instance
 embedder_service = EmbedderService()

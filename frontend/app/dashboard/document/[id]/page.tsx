@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
-import WorkspaceTabs from '@/components/workspace/WorkspaceTabs';
+import ChatTab from '@/components/workspace/ChatTab';
 import PDFViewer from '@/components/workspace/PDFViewer';
 import ProcessingStatus from '@/components/documents/ProcessingStatus';
 import { 
@@ -46,6 +46,9 @@ export default function DocumentWorkspacePage() {
   const [replacedDoc, setReplacedDoc] = useState<{ id: string; filename: string } | null>(null);
 
   const fetchDocumentInfo = async () => {
+    const isValidUUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(documentId);
+    if (!isValidUUID) return;
+
     setLoading(true);
     setError(null);
     try {
@@ -81,7 +84,8 @@ export default function DocumentWorkspacePage() {
   };
 
   useEffect(() => {
-    if (documentId) {
+    const isValidUUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(documentId);
+    if (documentId && isValidUUID) {
       fetchDocumentInfo();
     }
   }, [documentId]);
@@ -224,7 +228,7 @@ export default function DocumentWorkspacePage() {
               />
             </div>
 
-            {/* Right Column: AI Study Panel (WorkspaceTabs) */}
+            {/* Right Column: AI Chat Panel */}
             <div 
               className={`h-full transition-all duration-300 ${
                 // Mobile behavior: toggle view
@@ -236,8 +240,8 @@ export default function DocumentWorkspacePage() {
                   : 'hidden'
               }`}
             >
-              <div className="flex-1 overflow-y-auto bg-[#12121A] border border-[#1E1E2A] rounded-3xl p-5 shadow-2xl flex flex-col min-h-0">
-                <WorkspaceTabs 
+              <div className="flex-1 flex flex-col min-h-0">
+                <ChatTab 
                   documentId={documentId} 
                   onCitationClick={handleCitationClick}
                 />
@@ -270,7 +274,7 @@ export default function DocumentWorkspacePage() {
             }`}
           >
             <MessageSquare className="w-5 h-5" />
-            <span>Study Tools</span>
+            <span>AI Chat</span>
           </button>
         </div>
       </div>

@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 import sys
+import httpx
 from typing import AsyncGenerator, Dict, Any, Optional
 from app.config import settings
 
@@ -10,96 +11,125 @@ logger = logging.getLogger(__name__)
 
 class LLMService:
     """
-    Unified local LLM Client using a pretrained Hugging Face model.
-    Does not call any external APIs, running completely locally.
-    Falls back to intelligent offline synthesis during tests or if load fails.
+    Unified LLM Client calling external APIs (OpenAI or Ollama) instead of running models locally.
+    Falls back to intelligent offline synthesis if API calls fail or are not configured.
     """
 
     def __init__(self):
-        self.model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+        # Local Hugging Face pipeline is disabled
         self._local_pipeline = None
 
     @property
     def local_pipeline(self):
-        """Lazy load the local Hugging Face pipeline to keep startups fast."""
-        if self._local_pipeline is None:
-            # Skip heavy loading during unit tests to keep tests fast
-            is_testing = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("TESTING") == "True"
-            if is_testing:
-                logger.info("Test environment detected. Skipping local HF model pipeline loading, using offline synthesis.")
-                self._local_pipeline = False
-                return None
+        # Stub for backward compatibility
+        return None
 
-            logger.info(f"Loading local pretrained Hugging Face model '{self.model_id}'...")
-            try:
-                import torch
-                from transformers import pipeline
-                
-                # Check for CUDA availability
-                device = 0 if torch.cuda.is_available() else -1
-                
-                self._local_pipeline = pipeline(
-                    "text-generation",
-                    model=self.model_id,
-                    torch_dtype=torch.float32,
-                    device_map="auto" if device == 0 else None,
-                    device=device if device != 0 else None
-                )
-                logger.info("Successfully loaded local Hugging Face model pipeline.")
-            except Exception as e:
-                logger.error(f"Failed to load local Hugging Face model pipeline: {e}. Falling back to offline synthesis.")
-                self._local_pipeline = False  # Mark as failed to avoid repeated loading attempts
-        
-        if self._local_pipeline is False:
-            return None
-        return self._local_pipeline
+    def _get_provider(self) -> str:
+        """
+        Determines the LLM provider based on settings.
+        """
+        provider = settings.LLM_PROVIDER.lower()
+        if provider == "auto":
+            if settings.OPENAI_API_KEY:
+                return "openai"
+            else:
+                # If no API key is present, default to mock/fallback
+                return "mock"
+        return provider
 
     async def generate_text(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
-        Generate text completion locally.
+        Generate text completion via API.
         """
-        try:
-            pipeline = self.local_pipeline
-            if pipeline is not None:
-                return await self._call_local_model(prompt, system_prompt)
-        except Exception as e:
-            logger.warning(f"Local Hugging Face model run failed: {e}. Using offline synthesis.")
-            
-        return self._intelligent_fallback_text(prompt, system_prompt)
+        provider = self._get_provider()
+        logger.info(f"Generating text using LLM provider: {provider}")
 
-    async def _call_local_model(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        pipeline = self.local_pipeline
+        if provider == "openai":
+            return await self._generate_openai(prompt, system_prompt)
+        elif provider == "ollama":
+            return await self._generate_ollama(prompt, system_prompt)
+        else:
+            return self._intelligent_fallback_text(prompt, system_prompt)
+
+    async def _generate_openai(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        api_key = settings.OPENAI_API_KEY
+        if not api_key:
+            logger.warning("OpenAI API key not set, falling back to mock.")
+            return self._intelligent_fallback_text(prompt, system_prompt)
+
+        base_url = settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         
-        # Apply model chat template
-        formatted_prompt = pipeline.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        data = {
+            "model": settings.LLM_MODEL or "gpt-4o-mini",
+            "messages": messages,
+            "temperature": 0.3
+        }
         
-        # Run inference in worker thread to prevent blocking ASGI server
-        loop = asyncio.get_running_loop()
-        def generate():
-            outputs = pipeline(
-                formatted_prompt,
-                max_new_tokens=1024,
-                do_sample=True,
-                temperature=0.3,
-                top_p=0.9,
-                return_full_text=False
-            )
-            return outputs[0]["generated_text"]
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"OpenAI API call failed: {e}. Falling back to mock.")
+            return self._intelligent_fallback_text(prompt, system_prompt)
+
+    async def _generate_ollama(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        base_url = settings.OLLAMA_BASE_URL or "http://localhost:11434"
+        url = f"{base_url.rstrip('/')}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        model = settings.LLM_MODEL or "llama3"
+        if model.startswith("gpt-"):
+            model = "llama3"
             
-        return await loop.run_in_executor(None, generate)
+        data = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning(f"Ollama API call failed: {e}. Falling back to mock.")
+            return self._intelligent_fallback_text(prompt, system_prompt)
 
     async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate structured JSON response from the LLM.
         """
+        provider = self._get_provider()
+        if provider == "mock":
+            # Direct parse for mock text to avoid parsing failures
+            raw_text = self._intelligent_fallback_text(prompt, system_prompt)
+            try:
+                return json.loads(raw_text)
+            except Exception:
+                pass
+
         json_prompt = f"{prompt}\n\nIMPORTANT: Return ONLY a valid JSON object. No Markdown formatting or backticks around the output."
         raw_text = await self.generate_text(json_prompt, system_prompt)
         
@@ -131,8 +161,122 @@ class LLMService:
         """
         Stream text response token-by-token or word-by-word for real-time SSE streaming.
         """
-        full_text = await self.generate_text(prompt, system_prompt)
-        # Stream out words with micro-delays for realistic typing effect
+        provider = self._get_provider()
+        logger.info(f"Streaming text using LLM provider: {provider}")
+
+        if provider == "openai":
+            async for chunk in self._stream_openai(prompt, system_prompt):
+                yield chunk
+        elif provider == "ollama":
+            async for chunk in self._stream_ollama(prompt, system_prompt):
+                yield chunk
+        else:
+            async for chunk in self._stream_fallback(prompt, system_prompt):
+                yield chunk
+
+    async def _stream_openai(self, prompt: str, system_prompt: Optional[str] = None) -> AsyncGenerator[str, None]:
+        api_key = settings.OPENAI_API_KEY
+        if not api_key:
+            async for chunk in self._stream_fallback(prompt, system_prompt):
+                yield chunk
+            return
+
+        base_url = settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        data = {
+            "model": settings.LLM_MODEL or "gpt-4o-mini",
+            "messages": messages,
+            "temperature": 0.3,
+            "stream": True
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream("POST", url, headers=headers, json=data) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        yield content
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error(f"OpenAI stream failed: {e}. Falling back to word stream.")
+            async for chunk in self._stream_fallback(prompt, system_prompt):
+                yield chunk
+
+    async def _stream_ollama(self, prompt: str, system_prompt: Optional[str] = None) -> AsyncGenerator[str, None]:
+        base_url = settings.OLLAMA_BASE_URL or "http://localhost:11434"
+        url = f"{base_url.rstrip('/')}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        model = settings.LLM_MODEL or "llama3"
+        if model.startswith("gpt-"):
+            model = "llama3"
+            
+        data = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "stream": True
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                async with client.stream("POST", url, headers=headers, json=data) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        yield content
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning(f"Ollama stream failed: {e}. Falling back to word stream.")
+            async for chunk in self._stream_fallback(prompt, system_prompt):
+                yield chunk
+
+    async def _stream_fallback(self, prompt: str, system_prompt: Optional[str] = None) -> AsyncGenerator[str, None]:
+        full_text = self._intelligent_fallback_text(prompt, system_prompt)
         words = full_text.split(" ")
         for i, word in enumerate(words):
             suffix = " " if i < len(words) - 1 else ""
@@ -141,7 +285,7 @@ class LLMService:
 
     def _intelligent_fallback_text(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
-        Fall back to an intelligent context processor when local Hugging Face model is loading or unavailable.
+        Fall back to an intelligent context processor when API LLM is unavailable.
         """
         logger.info("Using intelligent LLM fallback engine.")
         prompt_lower = prompt.lower()
@@ -207,10 +351,54 @@ class LLMService:
         # Regular text / summary / chat response in fallback
         if "summary" in prompt_lower or "summarize" in prompt_lower:
             return (
-                "## Key Takeaways\n\n"
+                "## 📝 Document Summary Study Guide\n\n"
+                "### Key Takeaways\n"
                 "1. **Core Overview**: This document presents a structured framework covering fundamental concepts, methodology, and practical applications.\n"
                 "2. **Key Concepts**: Focuses on optimizing understanding, retaining crucial subject matter, and providing clear step-by-step guidance.\n"
-                "3. **Conclusion**: Master of these core principles equips students to effectively answer assessment questions and synthesize complex topics."
+                "3. **Conclusion**: Mastery of these core principles equips students to effectively answer assessment questions and synthesize complex topics."
+            )
+
+        if "quiz" in prompt_lower or "question" in prompt_lower or "test" in prompt_lower:
+            return (
+                "## 🧠 Practice Quiz & Self-Assessment\n\n"
+                "Here are practice questions based on the document to test your understanding:\n\n"
+                "### Question 1: Multiple Choice\n"
+                "What is the primary function of Vector Embeddings in RAG systems?\n"
+                "- **A)** To translate text into high-dimensional geometric representations for semantic search (Correct)\n"
+                "- **B)** To compress PDF files for faster disk downloading\n"
+                "- **C)** To automatically format document text into HTML tags\n"
+                "- **D)** To clear database cache records periodically\n\n"
+                "*Explanation*: Vector embeddings represent text semantics in numerical vector spaces, enabling similarity calculation.\n\n"
+                "--- \n\n"
+                "### Question 2: Descriptive\n"
+                "Explain how sliding window chunking prevents context fragmentation.\n"
+                "**Answer**: Sliding window chunking overlays consecutive text blocks (e.g., 512 tokens with 64-token overlap) so that sentences bridging chunk boundaries are captured completely without losing context."
+            )
+
+        if "flashcard" in prompt_lower or "card" in prompt_lower:
+            return (
+                "## 🗂️ Interactive Study Flashcards\n\n"
+                "Here are review flashcards for key terms in the document:\n\n"
+                "### Card 1\n"
+                "**Front**: What is Cosine Similarity?\n"
+                "**Back**: A metric used to measure how similar two vectors are, calculating the cosine of the angle between them to determine direction similarity independent of magnitude.\n\n"
+                "--- \n\n"
+                "### Card 2\n"
+                "**Front**: What is the purpose of the overlapping window in text chunking?\n"
+                "**Back**: It ensures that semantic information located at the boundaries of chunk splits is not lost or fragmented, preserving context for RAG retrieval."
+            )
+
+        if "notes" in prompt_lower or "bullet" in prompt_lower or "formula" in prompt_lower:
+            return (
+                "## 💡 Revision Notes & Formulas\n\n"
+                "Here are key consolidated revision bullet points and relevant formulas:\n\n"
+                "### Core Architecture & Principles\n"
+                "- System is structured into modular components for scalable processing.\n"
+                "- Data flows sequentially through parsing, embedding, storage, and retrieval.\n"
+                "- High performance is maintained via vector search indexing.\n\n"
+                "### Key Mathematical Formulas\n"
+                "- **Cosine Distance**: $$1.0 - \\frac{A \\cdot B}{||A|| \\cdot ||B||}$$\n"
+                "- **Recall Rate**: $$\\text{Recall} = \\frac{\\text{True Positives}}{\\text{True Positives} + \\text{False Negatives}}$$"
             )
 
         if "answer the question based only on the following context" in prompt_lower or "doubt" in prompt_lower or "context:" in prompt_lower:

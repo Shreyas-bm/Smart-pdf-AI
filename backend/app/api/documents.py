@@ -1,10 +1,11 @@
-from PIL.Image import logger
+import logging
+logger = logging.getLogger(__name__)
 from app.services.storage import StorageService
 import os
 import uuid
 from typing import List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -37,6 +38,7 @@ class UploadResponse(BaseModel):
 
 @router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -46,11 +48,12 @@ async def upload_document(
     registers it in the database with status 'processing', and triggers
     the background Celery processing pipeline.
     """
-    # 1. Validate PDF file type
-    if not file.filename.lower().endswith(".pdf"):
+    # 1. Validate file type (PDF or Word)
+    filename_lower = file.filename.lower()
+    if not (filename_lower.endswith(".pdf") or filename_lower.endswith(".docx")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are supported."
+            detail="Only PDF and DOCX files are supported."
         )
         
     # 2. Read bytes to determine size
@@ -70,7 +73,8 @@ async def upload_document(
     # 5. Write to local temporary directory inside workspace
     temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../temp_uploads"))
     os.makedirs(temp_dir, exist_ok=True)
-    temp_file_path = os.path.join(temp_dir, f"{doc_id}.pdf")
+    ext = ".docx" if filename_lower.endswith(".docx") else ".pdf"
+    temp_file_path = os.path.join(temp_dir, f"{doc_id}{ext}")
     
     try:
         with open(temp_file_path, "wb") as f:
@@ -86,9 +90,10 @@ async def upload_document(
         id=doc_id,
         user_id=current_user.id,
         filename=file.filename,
-        file_url="",  # Will be populated by worker
+        file_url=f"db://{doc_id}",
         file_size=file_size,
-        status="processing"
+        status="processing",
+        file_data=file_bytes
     )
     
     try:
@@ -106,13 +111,26 @@ async def upload_document(
         
     # 7. Dispatch background process task
     # process_pdf_document.delay returns an AsyncResult which has an id
-    task = process_pdf_document.delay(str(doc_id), temp_file_path)
+    try:
+        task = process_pdf_document.delay(str(doc_id), temp_file_path)
+        task_id = task.id
+    except Exception as task_error:
+        # A local development environment may not have Redis/Celery running.
+        # Process the file after this response instead of leaving it permanently
+        # in "processing" state.
+        logger.warning(
+            "Celery dispatch failed for document %s; using in-process background task: %s",
+            doc_id,
+            task_error,
+        )
+        background_tasks.add_task(process_pdf_document, str(doc_id), temp_file_path)
+        task_id = f"local-{doc_id}"
     
     return {
         "document_id": doc_id,
         "filename": file.filename,
         "status": "processing",
-        "task_id": task.id
+        "task_id": task_id
     }
 
 @router.get("", response_model=List[DocumentResponse])
@@ -198,9 +216,8 @@ def download_document(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Serve the actual PDF file content.
-    If the document uses local mock-s3, returns the PDF from temp_uploads.
-    Otherwise, generates and redirects to a presigned S3 download URL.
+    Serve the actual PDF or Word file content.
+    Returns the binary stored in the database.
     """
     doc = db.query(PDFDocument).filter(
         PDFDocument.id == document_id,
@@ -213,37 +230,64 @@ def download_document(
             detail="Document not found or access denied."
         )
         
+    filename_lower = doc.filename.lower()
+    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if filename_lower.endswith(".docx") else "application/pdf"
+    
+    if doc.file_data:
+        return Response(
+            content=doc.file_data,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={doc.filename}" if filename_lower.endswith(".docx") else f"inline; filename={doc.filename}"}
+        )
+        
+    # Fallback to local file if database data is missing (for legacy entries)
     temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../temp_uploads"))
-    temp_file_path = os.path.join(temp_dir, f"{document_id}.pdf")
+    ext = ".docx" if filename_lower.endswith(".docx") else ".pdf"
+    temp_file_path = os.path.join(temp_dir, f"{document_id}{ext}")
+    if os.path.exists(temp_file_path):
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            path=temp_file_path,
+            filename=doc.filename,
+            media_type=media_type
+        )
+        
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Source file was not found."
+    )
 
-    # If it is mock-s3 or empty url, try to serve from local temp_uploads
-    if not doc.file_url or doc.file_url.startswith("mock-s3://"):
-        if os.path.exists(temp_file_path):
-            return FileResponse(
-                path=temp_file_path,
-                filename=doc.filename,
-                media_type="application/pdf"
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="PDF source file was not found on the server."
-            )
-    else:
-        # Try to generate pre-signed URL from S3 compatible store
-        try:
-            storage = StorageService()
-            presigned_url = storage.generate_presigned_url(doc.file_url)
-            return RedirectResponse(url=presigned_url)
-        except Exception as e:
-            logger.error(f"Failed to generate pre-signed URL, attempting local file: {e}")
-            if os.path.exists(temp_file_path):
-                return FileResponse(
-                    path=temp_file_path,
-                    filename=doc.filename,
-                    media_type="application/pdf"
-                )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve file from S3 and local fallback not found."
-            )
+@router.get("/{document_id}/pages")
+def get_document_pages(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all text pages/paragraphs of a document (for rendering DOCX or PDF text directly).
+    """
+    doc = db.query(PDFDocument).filter(
+        PDFDocument.id == document_id,
+        PDFDocument.user_id == current_user.id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or access denied."
+        )
+        
+    # Group chunks by page number
+    from collections import defaultdict
+    pages_dict = defaultdict(list)
+    for chunk in doc.chunks:
+        pages_dict[chunk.page_number].append(chunk.text_content)
+        
+    sorted_pages = []
+    for page_num in sorted(pages_dict.keys()):
+        sorted_pages.append({
+            "page_number": page_num,
+            "text": " ".join(pages_dict[page_num])
+        })
+        
+    return sorted_pages

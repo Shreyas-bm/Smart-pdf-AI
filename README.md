@@ -1,12 +1,29 @@
-# SmartPDF AI: PDF Analyzer UI Implementation Spec
+# SmartPDF AI: Interactive Course Study Workspace 🚀
 
-The user interface for the SmartPDF AI PDF Analyzer has been designed as a premium, highly interactive study workspace. It bridges the document reading flow with the AI-augmented learning modules through a synchronized, responsive layout.
+SmartPDF AI is a premium, local-first interactive study workspace that transforms course materials (PDFs & DOCX files) into dynamic learning assets. It bridges document reading with AI-augmented learning modules through a synchronized, responsive layout.
+
+The application operates in a **local-first anonymous mode** by default, storing documents and vector search indices locally in SQLite, making it extremely lightweight and secure without needing heavy Postgres or Redis dependencies for local development.
+
+---
+
+## ✨ Features
+
+- **📂 Multi-format Ingestion**: Instant ingestion and text extraction for both `.pdf` and `.docx` documents.
+- **⚡ In-Process Task processing**: Fallback to synchronous in-process tasks when Redis/Celery are offline.
+- **🧠 Semantic Text Embeddings**: Uses LlamaIndex sentence splitting and SentenceTransformers (`BAAI/bge-large-en-v1.5`) for high-fidelity vector representation.
+- **💬 Citation-Augmented RAG Chat**: Conversational AI assistant with click-to-navigate page citations. Clicking a citation jumps the PDF viewer to the correct page automatically.
+- **📝 Automatic Learning Tools**:
+  - **Summary**: Concise and chapter-by-chapter summaries.
+  - **Revision Points**: Core concepts, definitions, and key formulas.
+  - **Quiz**: Self-assessment multiple-choice (MCQs) and descriptive questions.
+  - **Flashcards**: Quick-review front/back flashcard decks.
+- **🎨 Premium Dark Theme**: Beautiful slate-dark UI with glassmorphic accents, backdrop blurs, and responsive layout scaling.
 
 ---
 
 ## 🏗️ Architecture & Component Hierarchy
 
-The workspace is built on Next.js using a responsive grid system and interactive React state loops:
+The study workspace is built on Next.js 15 (App Router) and FastAPI, coordinated through a responsive layout:
 
 ```mermaid
 graph TD
@@ -20,67 +37,125 @@ graph TD
     D --> I[ChatTab]
 ```
 
-*   **DocumentWorkspacePage (`[id]/page.tsx`)**: Manages workspace state including document metadata, the active page (`currentPage`), mobile tab toggle (`mobileTab`), collapsible side panel (`showRightPanel`), and file replacement upload triggers.
-*   **PDFViewer (`PDFViewer.tsx`)**: Render engine using PDF.js. Handles Canvas-based pages, programmatic zooming, file replacements, page navigation, and in-document text search with index matching.
-*   **WorkspaceTabs (`WorkspaceTabs.tsx`)**: Main layout for study tools, wrapping the summary, quiz, flashcards, and chat modules.
-*   **ChatTab (`ChatTab.tsx`)**: Conversational RAG assistant. Houses message threads, streams answers, and renders citations that hook back into the PDF viewer.
+- **DocumentWorkspacePage (`[id]/page.tsx`)**: Manages the synchronized page state between chat citations and the PDF canvas.
+- **PDFViewer (`PDFViewer.tsx`)**: Canvas-rendered viewer supporting search, zooming, and text extraction.
+- **ChatTab (`ChatTab.tsx`)**: Handles SSE streaming chat responses from the backend, parsing source citations into navigate-on-click buttons.
 
 ---
 
-## 📱 Breakpoint Layouts & Responsiveness
+## 🛠️ Tech Stack
 
-| Breakpoint | Layout Style | Left Column (PDF) | Right Column (Tools/Chat) | Special Interactions |
-| :--- | :--- | :--- | :--- | :--- |
-| **Desktop** ($\ge 1024\text{px}$) | Side-by-Side Split | `58%` width | `42%` width | Collapsible tools drawer to expand PDF to `100%` width. |
-| **Tablet** ($768\text{px} - 1023\text{px}$) | Collapsible Split | `50%` width | `50%` width | Right panel defaults to visible, toggleable via an icon button. |
-| **Mobile** ($< 768\text{px}$) | Tabbed Navigation | Full Screen (when active) | Full Screen (when active) | Bottom navigation bar toggles views; citation clicks auto-switch to PDF. |
+### Backend
+- **Framework**: FastAPI (Python)
+- **ORM/Database**: SQLAlchemy + SQLite (Local development) / PostgreSQL (Production)
+- **Task Runner**: Celery (Optional)
+- **Vector Search**: SQLite-based native vector storage & ChromaDB integrations
+- **AI Processing**: HuggingFace SentenceTransformer, OpenAI API, or local Ollama instances
+
+### Frontend
+- **Framework**: Next.js 15 (React 19, TypeScript)
+- **Styling**: Tailwind CSS
+- **Icons**: Lucide React
+- **Animations**: Framer Motion
 
 ---
 
-## 🔗 Page Citation Integration
+## 🚀 Getting Started
 
-To enable a fluid reading and questioning flow, the chat and PDF viewer communicate via a centralized callback context:
+### Prerequisites
+- **Python**: v3.10 or higher
+- **Node.js**: v18.0 or higher
+- **OpenAI API Key** (Optional): Set in your environment to use OpenAI model generation, or use Ollama/intelligent mock fallbacks.
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as ChatTab
-    participant W as WorkspaceTabs
-    participant P as WorkspacePage
-    participant V as PDFViewer
-    
-    U->>C: Clicks "Page X" Citation
-    C->>W: Triggers onCitationClick(X)
-    W->>P: Propagates callback(X)
-    P->>P: Updates state currentPage = X
-    Note over P: If mobile, switches mobileTab = 'document'
-    P->>V: Passes updated currentPage
-    V->>V: Re-renders PDF canvas at page X
+### Windows (Quick Start)
+The project comes with a unified launch panel `run.bat`. Simply double-click `run.bat` or run:
+```cmd
+run.bat
+```
+The script will:
+1. Detect and guide you to install any missing dependencies.
+2. Initialize the Python virtual environment and run backend migrations.
+3. Install frontend node modules.
+4. Launch both the backend FastAPI server and the Next.js frontend in separate terminal windows.
+
+---
+
+### Manual Setup
+
+#### 1. Setup Backend
+Navigate to the `backend` directory:
+```bash
+cd backend
 ```
 
-This interaction guarantees that clicking an AI citation in any answer immediately jumps the user to the correct page of the document.
+Create a virtual environment and activate it:
+```bash
+python -m venv venv
+# On Windows:
+call venv\Scripts\activate
+# On Linux/macOS:
+source venv/bin/activate
+```
+
+Install requirements:
+```bash
+pip install -r requirements.txt
+```
+
+Create your local `.env` configuration file:
+```bash
+cp .env.example .env
+```
+*(By default, `.env` is configured to run with SQLite `sqlite:///./test.db`, requiring no database setup).*
+
+Start the FastAPI development server:
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+- API Docs will be available at: http://localhost:8000/docs
+- Healthy check at: http://localhost:8000/
+
+#### 2. Setup Frontend
+Navigate to the `frontend` directory:
+```bash
+cd frontend
+```
+
+Install dependencies:
+```bash
+npm install
+```
+
+Start the Next.js development server:
+```bash
+npm run dev
+```
+Open http://localhost:3000 to access the workspace.
 
 ---
 
-## 🔄 Live File Replacement Pipeline
+## 📁 Repository Structure
 
-Replacing a PDF document updates the workspace without losing context. The pipeline leverages FastAPI backend endpoints:
-
-1.  **Selection**: The user clicks **Replace** in the PDFViewer toolbar or page header, triggering a hidden native file input.
-2.  **Upload**: The selected file is posted to `/api/documents/upload`.
-3.  **Visualization**: A modal overlay renders the step-by-step progress using `<ProcessingStatus>`:
-    *   *Step 1*: Reading & Parsing PDF Text
-    *   *Step 2*: Semantic Sentence Splitting
-    *   *Step 3*: Generating Vector Embeddings
-    *   *Step 4*: Vector Store & Indexing
-    *   *Step 5*: Study Workspace Ready
-4.  **Transition**: Once complete, the router transitions the user to the newly generated document workspace.
+```
+├── backend/                  # FastAPI Application
+│   ├── app/
+│   │   ├── api/             # API Endpoints (documents, chat, quiz, etc.)
+│   │   ├── db/              # SQLAlchemy Models & SQLite DB setup
+│   │   ├── services/        # Embedder, Storage, LLM & RAG Engines
+│   │   └── workers/         # Background tasks & schedulers
+│   ├── migrations/          # Alembic migrations database scripts
+│   ├── requirements.txt     # Python Dependencies
+│   └── .env.example         # Example configuration settings
+├── frontend/                 # Next.js Application
+│   ├── app/                 # Next.js App Router Page layouts
+│   ├── components/          # Reusable Workspace components (UploadZone, PDFViewer, Chat)
+│   ├── tailwind.config.js   # Tailwinds aesthetics variables
+│   └── package.json         # Node Dependencies
+├── run.bat                   # Windows batch file launch panel
+└── README.md                 # Project Documentation
+```
 
 ---
 
-## 🎨 Design System & Aesthetics
-
-*   **Theme**: Dark mode design utilizing a dark slate background (`#0B0B0F`), deep charcoal cards (`#12121A`), and subtle border dividers (`#1E1E2A`).
-*   **Accents**: Electric purple (`#7C5CFF`) for workspace accents and cyan (`#00D4FF`) for actions, search alerts, and processing statuses.
-*   **Glassmorphism**: Backdrop blur filters (`backdrop-blur-md`) on sticky menus and sidebar toolbars.
-*   **Typography**: Clean sans-serif sans-serif font weights with semantic typography for maximum readability.
+## 🔒 License
+This project is licensed under the MIT License. Feel free to use, modify, and distribute it.

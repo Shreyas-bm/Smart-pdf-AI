@@ -19,4 +19,6 @@ httpx>=0.27.0
 Pillow>=10.2.0
 boto3>=1.0.0
 python-multipart
+python-docx
+
 

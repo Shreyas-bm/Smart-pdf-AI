@@ -16,8 +16,9 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
 
   const validateAndProcessFile = (file: File) => {
     setError(null);
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Invalid file format. Only PDF files are supported.');
+    const nameLower = file.name.toLowerCase();
+    if (!(nameLower.endsWith('.pdf') || nameLower.endsWith('.docx'))) {
+      setError('Invalid file format. Only PDF and DOCX files are supported.');
       return false;
     }
     if (file.size > 50 * 1024 * 1024) {
@@ -80,10 +81,10 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
 
       const data = await res.json();
       onUploadSuccess(data.document_id, data.filename, data.task_id || '');
-    } catch (err: any) {
-      // Direct demo fallback if backend server isn't running live during client testing
-      const mockDocId = 'doc-' + Math.random().toString(36).substr(2, 9);
-      onUploadSuccess(mockDocId, selectedFile.name, 'task-demo');
+    } catch (err: unknown) {
+      // Never navigate with a made-up id: the workspace can only load documents
+      // that were actually created by the API.
+      setError(err instanceof Error ? err.message : 'Unable to upload the document. Please try again.');
     } finally {
       setUploading(false);
     }
@@ -110,7 +111,7 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
           type="file"
           ref={fileInputRef}
           onChange={handleFileChange}
-          accept="application/pdf"
+          accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           className="hidden"
           id="pdf-file-input"
         />
@@ -122,7 +123,7 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
 
           <div>
             <h3 className="text-xl font-bold text-white mb-1">
-              {selectedFile ? selectedFile.name : 'Upload PDF Document'}
+              {selectedFile ? selectedFile.name : 'Upload PDF or Word Document'}
             </h3>
             <p className="text-sm text-gray-400 max-w-md mx-auto">
               {selectedFile
@@ -132,7 +133,7 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
           </div>
 
           <div className="flex items-center gap-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-            <span>Supports PDF</span>
+            <span>Supports PDF, DOCX</span>
             <span>•</span>
             <span>Up to 50MB</span>
           </div>

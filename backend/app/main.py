@@ -6,7 +6,6 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
-from app.api.auth import router as auth_router
 from app.api.documents import router as documents_router
 from app.api.summaries import router as summaries_router
 from app.api.bullets import router as bullets_router
@@ -47,7 +46,6 @@ app.add_middleware(
 )
 
 # Include Routers
-app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(summaries_router)
 app.include_router(bullets_router)

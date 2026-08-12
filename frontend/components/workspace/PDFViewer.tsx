@@ -38,6 +38,8 @@ export default function PDFViewer({
   const [error, setError] = useState<string | null>(null);
   const [pdfjsLoaded, setPdfjsLoaded] = useState<boolean>(false);
   const [fileUrl, setFileUrl] = useState<string>('');
+  const [wordPages, setWordPages] = useState<{ page_number: number; text: string }[]>([]);
+  const isWordDoc = filename.toLowerCase().endsWith('.docx');
 
   // Search states
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -117,7 +119,7 @@ export default function PDFViewer({
 
   // 4. Load PDF document
   useEffect(() => {
-    if (!pdfjsLoaded || !fileUrl) return;
+    if (!pdfjsLoaded || !fileUrl || isWordDoc) return;
 
     let isMounted = true;
     setLoading(true);
@@ -160,7 +162,50 @@ export default function PDFViewer({
     return () => {
       isMounted = false;
     };
-  }, [pdfjsLoaded, fileUrl, indexPDFText]);
+  }, [pdfjsLoaded, fileUrl, indexPDFText, isWordDoc]);
+
+  // 4b. Load Word document pages
+  useEffect(() => {
+    if (!documentId || !isWordDoc) return;
+
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+    setPagesText([]);
+    setSearchMatches([]);
+    setCurrentMatchIndex(-1);
+
+    const token = localStorage.getItem('smart_pdf_token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    fetch(`/api/documents/${documentId}/pages`, { headers })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server returned status ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!isMounted) return;
+        setWordPages(data);
+        setNumPages(data.length || 1);
+        
+        // Index search text for local search
+        const texts = data.map((p: any) => (p.text || '').toLowerCase());
+        setPagesText(texts);
+        
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error('Word file load error:', err);
+        setError('Failed to load Word document content.');
+        setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [documentId, isWordDoc]);
 
   // 5. Render Page Canvas
   const renderPage = useCallback((pageNum: number, scale: number) => {
@@ -389,7 +434,7 @@ export default function PDFViewer({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="px-3 py-2 rounded-xl bg-[#1E1E2A] border border-white/5 hover:border-[#7C5CFF]/30 text-xs font-bold text-gray-300 hover:text-white flex items-center gap-1.5 transition-all"
-                title="Replace PDF Document"
+                title="Replace Document"
               >
                 <RefreshCw className="w-3.5 h-3.5 text-[#00D4FF]" /> Replace
               </button>
@@ -397,7 +442,7 @@ export default function PDFViewer({
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileChange}
-                accept="application/pdf"
+                accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 className="hidden"
               />
             </>
@@ -409,7 +454,7 @@ export default function PDFViewer({
             target="_blank"
             rel="noopener noreferrer"
             className="p-2 rounded-xl bg-[#0B0B0F] border border-[#1E1E2A] text-gray-400 hover:text-white hover:border-[#7C5CFF]/40 transition-all flex items-center justify-center"
-            title="Download Original PDF"
+            title="Download Original Document"
           >
             <Download className="w-4 h-4 text-[#7C5CFF]" />
           </a>
@@ -462,16 +507,47 @@ export default function PDFViewer({
           </div>
         )}
 
-        {/* Canvas container for scaling */}
-        <div className="relative shadow-2xl rounded-lg border border-[#1E1E2A]/50 bg-white overflow-hidden transition-all duration-200">
-          <canvas 
-            ref={canvasRef} 
-            className="block max-w-full"
+        {/* Document Content Display */}
+        {isWordDoc ? (
+          <div 
+            className="w-full max-w-[800px] glass-card p-10 rounded-2xl border border-[#7C5CFF]/30 text-gray-200 shadow-2xl leading-relaxed select-text font-sans"
             style={{ 
-              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)' 
+              fontSize: `${zoom * 15}px`,
+              lineHeight: '1.8'
             }}
-          />
-        </div>
+          >
+            {wordPages[currentPage - 1] ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between pb-4 border-b border-[#1E1E2A] mb-6">
+                  <span className="text-xs font-bold text-[#00D4FF] uppercase tracking-widest flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5" /> Word Document Section
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    Page {currentPage} of {numPages}
+                  </span>
+                </div>
+                <div className="whitespace-pre-wrap text-sm font-normal text-gray-200 select-text">
+                  {wordPages[currentPage - 1].text}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center text-gray-500 text-sm py-20">
+                No text content found on this page.
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Canvas container for scaling */
+          <div className="relative shadow-2xl rounded-lg border border-[#1E1E2A]/50 bg-white overflow-hidden transition-all duration-200">
+            <canvas 
+              ref={canvasRef} 
+              className="block max-w-full"
+              style={{ 
+                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)' 
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Page Indexing Progress Indicator */}

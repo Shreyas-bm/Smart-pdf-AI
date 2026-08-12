@@ -47,12 +47,9 @@ def get_conversations(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get all chat conversations for a given document.
+    Get all chat conversations. Disabled for offline/unauthenticated mode.
     """
-    return db.query(ChatConversation).filter(
-        ChatConversation.document_id == document_id,
-        ChatConversation.user_id == current_user.id
-    ).order_by(ChatConversation.created_at.desc()).all()
+    return []
 
 @router.post("", response_model=MessageResponse)
 async def post_chat_message(
@@ -61,8 +58,8 @@ async def post_chat_message(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Standard synchronous chat endpoint.
-    Retrieves context, generates answer, saves conversation history, and returns response with page references.
+    Standard synchronous chat endpoint (RAG query, no history database persistence).
+    Retrieves context, generates answer, and returns response with page references.
     """
     doc = db.query(PDFDocument).filter(
         PDFDocument.id == body.document_id,
@@ -75,57 +72,15 @@ async def post_chat_message(
             detail="Document not found or access denied."
         )
 
-    # Get or create conversation
-    conv = None
-    if body.conversation_id:
-        conv = db.query(ChatConversation).filter(
-            ChatConversation.id == body.conversation_id,
-            ChatConversation.user_id == current_user.id
-        ).first()
-
-    if not conv:
-        conv = ChatConversation(
-            id=uuid.uuid4(),
-            user_id=current_user.id,
-            document_id=body.document_id,
-            title=body.message[:40] if body.message else "New Doubt Conversation"
-        )
-        db.add(conv)
-        db.commit()
-        db.refresh(conv)
-
-    # Save User message
-    user_msg = ChatMessage(
-        id=uuid.uuid4(),
-        conversation_id=conv.id,
-        sender="user",
-        content=body.message,
-        page_references=[]
-    )
-    db.add(user_msg)
-    db.commit()
-
-    # Generate RAG response
+    # Generate RAG response directly using the retrieval and generation pipeline
     result = await rag_engine_service.answer_query(db, doc, body.message)
 
-    # Save AI response
-    ai_msg = ChatMessage(
-        id=uuid.uuid4(),
-        conversation_id=conv.id,
-        sender="ai",
-        content=result["answer"],
-        page_references={"pages": result["page_references"]}
-    )
-    db.add(ai_msg)
-    db.commit()
-    db.refresh(ai_msg)
-
     return {
-        "id": ai_msg.id,
-        "sender": ai_msg.sender,
-        "content": ai_msg.content,
+        "id": uuid.uuid4(),
+        "sender": "ai",
+        "content": result["answer"],
         "page_references": result["page_references"],
-        "created_at": ai_msg.created_at
+        "created_at": datetime.utcnow()
     }
 
 @router.post("/stream")

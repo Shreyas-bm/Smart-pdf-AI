@@ -1,3 +1,5 @@
+import io
+import docx
 import fitz
 import logging
 from typing import List, Dict, Any
@@ -21,7 +23,6 @@ def extract_pdf_content(file_bytes: bytes) -> List[Dict[str, Any]]:
         }
     """
     pages = []
-    
     try:
         # Open PDF from byte stream
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -52,5 +53,72 @@ def extract_pdf_content(file_bytes: bytes) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error processing PDF document: {e}", exc_info=True)
         raise ValueError(f"Could not parse PDF document: {e}")
+        
+    return pages
+
+def extract_docx_content(file_bytes: bytes) -> List[Dict[str, Any]]:
+    """
+    Extracts text page-by-page (virtual pages of ~1500 chars) from a DOCX file byte stream.
+    
+    Args:
+        file_bytes: The raw DOCX file bytes.
+        
+    Returns:
+        A list of dictionaries representing virtual pages.
+    """
+    pages = []
+    try:
+        # Load docx from byte stream
+        doc = docx.Document(io.BytesIO(file_bytes))
+        current_page_text = []
+        current_char_count = 0
+        page_num = 1
+        
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            current_page_text.append(text)
+            current_char_count += len(text)
+            
+            # Group into virtual pages of roughly 1500 characters
+            if current_char_count >= 1500:
+                full_text = "\n".join(current_page_text)
+                cleaned_text = " ".join(full_text.split())
+                
+                pages.append({
+                    "page_number": page_num,
+                    "text": cleaned_text,
+                    "length": len(cleaned_text),
+                    "header": current_page_text[0][:100] if current_page_text else ""
+                })
+                page_num += 1
+                current_page_text = []
+                current_char_count = 0
+                
+        # Append remaining paragraphs
+        if current_page_text:
+            full_text = "\n".join(current_page_text)
+            cleaned_text = " ".join(full_text.split())
+            pages.append({
+                "page_number": page_num,
+                "text": cleaned_text,
+                "length": len(cleaned_text),
+                "header": current_page_text[0][:100]
+            })
+            
+        # Fallback if document is empty
+        if not pages:
+            pages.append({
+                "page_number": 1,
+                "text": "Empty Word document.",
+                "length": 20,
+                "header": "Empty"
+            })
+            
+        logger.info(f"Successfully processed DOCX. Extracted {len(pages)} virtual pages.")
+    except Exception as e:
+        logger.error(f"Error processing DOCX document: {e}", exc_info=True)
+        raise ValueError(f"Could not parse DOCX document: {e}")
         
     return pages

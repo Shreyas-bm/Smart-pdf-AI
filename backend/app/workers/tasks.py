@@ -6,7 +6,7 @@ from app.workers.celery_app import celery_app
 from app.db.session import SessionLocal
 from app.db.models import PDFDocument
 from app.services.storage import StorageService
-from app.services.pdf_processor import extract_pdf_content
+from app.services.pdf_processor import extract_pdf_content, extract_docx_content
 from app.services.embedder import embedder_service
 from app.db.vector_store import save_document_chunks
 
@@ -30,7 +30,6 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
     db: Session = SessionLocal()
     doc_uuid = uuid.UUID(document_id)
     
-    keep_local_file = False
     try:
         # Retrieve PDFDocument
         db_document = db.query(PDFDocument).filter(PDFDocument.id == doc_uuid).first()
@@ -62,13 +61,18 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
             logger.info(f"Uploaded document {document_id} to S3 bucket as {object_key}")
         except Exception as storage_err:
             logger.warning(f"Storage upload failed, fallback to mock path: {storage_err}")
-            # Fallback for local development when MinIO is not running
+            # The original bytes remain in the database and are served by the
+            # download endpoint, so no permanent local copy is needed.
             db_document.file_url = f"mock-s3://{s3_object_name}"
-            keep_local_file = True
             
-        # 3. Extract text content page-by-page
-        logger.info(f"Extracting text from PDF document {document_id}")
-        pages = extract_pdf_content(file_bytes)
+        # 3. Extract text content page-by-page (PDF or Word)
+        filename_lower = db_document.filename.lower()
+        if filename_lower.endswith(".docx"):
+            logger.info(f"Extracting text from DOCX document {document_id}")
+            pages = extract_docx_content(file_bytes)
+        else:
+            logger.info(f"Extracting text from PDF document {document_id}")
+            pages = extract_pdf_content(file_bytes)
         
         # 4. Chunk text and prepare for embedding
         logger.info(f"Chunking extracted text for document {document_id}")
@@ -125,16 +129,14 @@ def process_pdf_document(document_id: str, local_file_path: str) -> bool:
         return False
         
     finally:
-        # 7. Cleanup local temp file if S3 upload was successful, otherwise keep it for local download
+        # 7. The document bytes are stored in the database, so the upload file
+        # is only a short-lived processing artifact.
         if os.path.exists(local_file_path):
-            if not keep_local_file:
-                try:
-                    os.remove(local_file_path)
-                    logger.info(f"Cleaned up temporary file {local_file_path}")
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to clean up temporary file {local_file_path}: {cleanup_err}")
-            else:
-                logger.info(f"Preserving local file {local_file_path} as fallback for frontend download/viewing")
+            try:
+                os.remove(local_file_path)
+                logger.info(f"Cleaned up temporary file {local_file_path}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to clean up temporary file {local_file_path}: {cleanup_err}")
         db.close()
         
     return True

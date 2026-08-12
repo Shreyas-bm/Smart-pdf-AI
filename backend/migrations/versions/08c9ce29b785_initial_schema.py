@@ -9,8 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from pgvector.sqlalchemy import Vector
-
 # revision identifiers, used by Alembic.
 revision: str = '08c9ce29b785'
 down_revision: Union[str, Sequence[str], None] = None
@@ -19,9 +17,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Enable the pgvector extension first
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-
     # 1. Create users table
     op.create_table(
         'users',
@@ -55,7 +50,6 @@ def upgrade() -> None:
         sa.Column('chunk_index', sa.Integer(), nullable=False),
         sa.Column('text_content', sa.Text(), nullable=False),
         sa.Column('page_number', sa.Integer(), nullable=False),
-        sa.Column('embedding', Vector(1024), nullable=True),
         sa.ForeignKeyConstraint(['document_id'], ['pdf_documents.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id')
     )
@@ -122,4 +116,3 @@ def downgrade() -> None:
     op.drop_table('pdf_documents')
     op.drop_index(op.f('ix_users_email'), table_name='users')
     op.drop_table('users')
-    op.execute("DROP EXTENSION IF EXISTS vector;")
