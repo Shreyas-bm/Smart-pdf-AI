@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     DATABASE_URL: str = Field(
-        default="postgresql://smart_pdf_user:smart_pdf_password@localhost:5432/smart_pdf_db"
+        default="sqlite:///./test.db"
     )
     
     # Storage settings
