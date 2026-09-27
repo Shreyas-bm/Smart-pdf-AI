@@ -1,82 +1,111 @@
-import uuid
-import logging
-from typing import Dict, Any, List
-from sqlalchemy.orm import Session
-from app.db.models import PDFDocument, DocumentChunk, Summary
-from app.services.llm import llm_service
+from __future__ import annotations
+import re
+from typing import List, Dict, Any, Tuple
+from collections import Counter
+from backend.app.models.schemas import PageData, ChunkData, ChapterData, TopicData, DocumentMetadata
+from backend.app.services.chunker import split_into_sentences
 
-logger = logging.getLogger(__name__)
+STOP_WORDS = {
+    'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'were', 'which', 'about',
+    'into', 'more', 'other', 'some', 'such', 'than', 'them', 'then', 'these', 'they', 'will',
+    'also', 'been', 'each', 'even', 'first', 'most', 'only', 'same', 'their', 'when', 'is', 'are',
+    'was', 'were', 'be', 'been', 'being', 'in', 'on', 'at', 'to', 'by', 'an', 'a', 'as', 'it'
+}
 
-class SummaryService:
+def score_and_extract_sentences(text: str, max_sentences: int = 3) -> str:
     """
-    Generates and persists document summaries (short, medium, detailed) with chapter breakdowns.
+    Local extractive summarizer: scores sentences based on word frequency,
+    position weighting, and optimal sentence length.
     """
+    if not text or not text.strip():
+        return ""
+        
+    sentences = split_into_sentences(text)
+    if len(sentences) <= max_sentences:
+        return " ".join(sentences)
+        
+    # Word frequency map
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    words = [w for w in words if w not in STOP_WORDS]
+    if not words:
+        return " ".join(sentences[:max_sentences])
+        
+    word_freq = Counter(words)
+    max_freq = max(word_freq.values())
+    word_weights = {w: count / max_freq for w, count in word_freq.items()}
+    
+    scored_sentences: List[Tuple[int, float, str]] = [] # (original_index, score, sentence)
+    
+    for idx, sent in enumerate(sentences):
+        sent_words = re.findall(r'\b[a-zA-Z]{3,}\b', sent.lower())
+        if len(sent_words) < 5 or len(sent_words) > 60:
+            continue
+            
+        base_score = sum(word_weights.get(w, 0.0) for w in sent_words) / (len(sent_words) ** 0.5)
+        
+        # Position boost (earlier sentences in a section often state core themes)
+        pos_boost = 1.3 if idx == 0 else (1.15 if idx < 3 else 1.0)
+        
+        scored_sentences.append((idx, base_score * pos_boost, sent))
+        
+    if not scored_sentences:
+        return " ".join(sentences[:max_sentences])
+        
+    # Pick top N highest scoring
+    scored_sentences.sort(key=lambda x: x[1], reverse=True)
+    top_picks = scored_sentences[:max_sentences]
+    
+    # Sort back by original sequential document order
+    top_picks.sort(key=lambda x: x[0])
+    
+    return " ".join([item[2] for item in top_picks])
 
-    async def generate_summary(
-        self, db: Session, document: PDFDocument, length_type: str = "medium"
-    ) -> Summary:
-        # Check if existing summary with same length_type exists
-        existing = db.query(Summary).filter(
-            Summary.document_id == document.id,
-            Summary.length_type == length_type
-        ).first()
+def generate_all_summaries(
+    document: DocumentMetadata,
+    chapters: List[ChapterData],
+    topics: List[TopicData],
+    chunks: List[ChunkData],
+    pages: List[PageData]
+) -> Tuple[DocumentMetadata, List[ChapterData], List[TopicData]]:
+    """
+    Generates summaries for:
+    - Entire Document overview
+    - Each Chapter
+    - Each Topic
+    """
+    chunk_map = {c.chunk_id: c for c in chunks}
+    
+    # 1. Topic Summaries
+    for topic in topics:
+        topic_texts = [chunk_map[cid].text for cid in topic.chunk_ids if cid in chunk_map]
+        combined = " ".join(topic_texts)
+        topic.summary = score_and_extract_sentences(combined, max_sentences=2)
+        if not topic.summary and topic_texts:
+            topic.summary = topic_texts[0][:200] + "..."
 
-        if existing:
-            return existing
+    # 2. Chapter Summaries
+    for chap in chapters:
+        chap_chunks = [c.text for c in chunks if c.chapter_id == chap.id]
+        combined_chap = " ".join(chap_chunks)
+        chap.summary = score_and_extract_sentences(combined_chap, max_sentences=3)
+        if not chap.summary and chap_chunks:
+            chap.summary = chap_chunks[0][:300] + "..."
 
-        # Fetch document chunks
-        chunks = db.query(DocumentChunk).filter(
-            DocumentChunk.document_id == document.id
-        ).order_by(DocumentChunk.chunk_index).all()
+    # 3. Document Overview Summary
+    doc_sample = " ".join([c.summary for c in chapters if c.summary])
+    if not doc_sample:
+        doc_sample = " ".join([p.clean_text[:400] for p in pages[:5]])
+        
+    document.summary = score_and_extract_sentences(doc_sample, max_sentences=4)
+    if not document.summary:
+        document.summary = f"This document comprises {document.page_count} pages covering {len(chapters)} main chapters and {len(topics)} detailed topics."
+        
+    # Key topics for overview
+    all_key_concepts = []
+    for t in topics:
+        all_key_concepts.extend(t.key_concepts)
+    document.key_topics = list(dict.fromkeys(all_key_concepts))[:8]
+    document.chapters_count = len(chapters)
+    document.topics_count = len(topics)
 
-        if not chunks:
-            text_context = f"Document title: {document.filename}. (No text extracted yet)."
-        else:
-            # Combine chunk texts up to ~6000 words limit
-            full_text = "\n\n".join([f"[Page {c.page_number}]: {c.text_content}" for c in chunks[:15]])
-            text_context = full_text[:12000]
-
-        system_prompt = (
-            "You are SmartPDF AI, an expert academic document summarizer. "
-            "Your objective is to provide structured, clear, high-yield summary material for students."
-        )
-
-        prompt = (
-            f"Please generate a {length_type} summary for the document '{document.filename}'.\n\n"
-            f"Requested summary detail level: {length_type.upper()}\n"
-            f"Format requirements:\n"
-            f"- short: 2-3 concise paragraphs summarizing the core thesis and main points.\n"
-            f"- medium: Comprehensive overview with 4-5 structured sections covering main chapters/topics.\n"
-            f"- detailed: Deep-dive summary with exhaustive topic breakdowns, key takeaways, and technical/academic insights.\n\n"
-            f"Document Content Extracted:\n{text_context}\n\n"
-            f"Provide the response as a JSON object with two fields:\n"
-            f'1. "full_summary": Markdown formatted string containing the complete summary.\n'
-            f'2. "chapter_summaries": JSON array of objects, each containing {{"title": "Section/Chapter Title", "summary": "Section summary content"}}.'
-        )
-
-        try:
-            result = await llm_service.generate_json(prompt, system_prompt)
-            full_summary = result.get("full_summary", f"Summary of {document.filename}")
-            chapter_summaries = result.get("chapter_summaries", [
-                {"title": "Overview", "summary": full_summary}
-            ])
-        except Exception as e:
-            logger.error(f"LLM JSON generation for summary failed: {e}. Falling back to text prompt.", exc_info=True)
-            raw_text = await llm_service.generate_text(prompt, system_prompt)
-            full_summary = raw_text
-            chapter_summaries = [{"title": "Document Overview", "summary": raw_text}]
-
-        summary_obj = Summary(
-            id=uuid.uuid4(),
-            document_id=document.id,
-            full_summary=full_summary,
-            chapter_summaries={"chapters": chapter_summaries},
-            length_type=length_type
-        )
-
-        db.add(summary_obj)
-        db.commit()
-        db.refresh(summary_obj)
-        return summary_obj
-
-summary_service = SummaryService()
+    return document, chapters, topics

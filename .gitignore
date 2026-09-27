@@ -1,63 +1,44 @@
-# Dependencies
-node_modules/
-jspm_packages/
-web_loaders/
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-
-# Next.js build outputs
-.next/
-out/
-build/
-dist/
-
-# Python Virtual Environments & Packages
-venv/
-.venv/
-env/
-ENV/
-pyvenv.cfg
-.python-version
+# Python bytecode and virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
-.mypy_cache/
+*.so
+.Python
+env/
+venv/
+ENV/
+pdf_env/
 .pytest_cache/
-.ruff_cache/
+.coverage
+htmlcov/
 
-# Local configuration files
+# Environment configurations
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env*.local
+.env.*.local
+*.env
 
-# SQLite Databases & Logs
-*.db
-*.sqlite3
-*.log
+# Node & Frontend dependencies and bundles
+node_modules/
+dist/
+build/
+.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
+.pnpm-debug.log*
 
-# Docker Volumes & Temp files
-.docker/
-docker-volumes/
-pgdata/
-redisdata/
+# Temporary Application Storage & Sessions
+temp_sessions/
+*.tmp
+*.temp
+sample_test_doc.pdf
 
-# OS and Editor configs
+# IDE & OS specific files
 .vscode/
 .idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
-*.tsbuildinfo
-
+Desktop.ini

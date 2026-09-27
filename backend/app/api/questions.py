@@ -27,8 +27,8 @@ class QuestionSetResponse(BaseModel):
 @router.get("/{document_id}/questions", response_model=QuestionSetResponse)
 async def get_or_generate_questions(
     document_id: uuid.UUID,
-    difficulty: str = Query(default="medium", regex="^(easy|medium|hard)$"),
-    q_type: str = Query(default="mixed", regex="^(mcq|descriptive|mixed)$"),
+    difficulty: str = Query(default="medium", pattern="^(easy|medium|hard)$"),
+    q_type: str = Query(default="mixed", pattern="^(mcq|descriptive|mixed)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

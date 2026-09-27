@@ -1,94 +1,76 @@
+from __future__ import annotations
+import asyncio
 import logging
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from backend.app.core.session import session_manager
+from backend.app.api.session import router as session_router
+from backend.app.api.document import router as document_router
+from backend.app.api.qa import router as qa_router
+from backend.app.api.quiz import router as quiz_router
 
-from app.config import settings
-from app.api.documents import router as documents_router
-from app.api.summaries import router as summaries_router
-from app.api.bullets import router as bullets_router
-from app.api.questions import router as questions_router
-from app.api.chat import router as chat_router
-
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("aipdf.main")
 
-from app.db.session import engine
-from app.db.models import Base
+async def periodic_session_cleanup():
+    """Background loop to automatically prune inactive/expired temporary sessions."""
+    while True:
+        try:
+            await asyncio.sleep(300) # Check every 5 minutes
+            session_manager.cleanup_expired_sessions()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in session cleanup task: {e}")
 
-# Auto-create tables for SQLite development/testing
-try:
-    logger.info("Auto-creating database tables if they do not exist...")
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables auto-created successfully.")
-except Exception as db_err:
-    logger.warning(f"Database auto-creation bypassed or failed: {db_err}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting AI PDF Learning Assistant backend server...")
+    cleanup_task = asyncio.create_task(periodic_session_cleanup())
+    yield
+    # Shutdown
+    logger.info("Shutting down backend server...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(
-    title="SmartPDF AI API",
-    description="Backend API for SmartPDF AI (Student PDF Summarizer & Study Assistant)",
+    title="AI PDF Learning Assistant API",
     version="1.0.0",
+    description="Document-centered learning workspace backend with OCR, Grounded Q&A, Chapter/Topic Exploration, and Quiz generation.",
+    lifespan=lifespan
 )
 
-# CORS Middleware Setup
+# Enable CORS for local Vite frontend and client calls
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include Routers
-app.include_router(documents_router)
-app.include_router(summaries_router)
-app.include_router(bullets_router)
-app.include_router(questions_router)
-app.include_router(chat_router)
+app.include_router(session_router)
+app.include_router(document_router)
+app.include_router(qa_router)
+app.include_router(quiz_router)
 
-# Custom Exception Handlers
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handle standard HTTP exceptions by returning standard JSON format."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
-    )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle model validation errors, showing user-friendly formatted error details."""
-    errors = []
-    for error in exc.errors():
-        loc = " -> ".join(str(x) for x in error.get("loc", []))
-        errors.append(f"{loc}: {error.get('msg')} ({error.get('type')})")
-    
-    logger.warning(f"Validation error on {request.url.path}: {errors}")
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "Validation error occurred.", "errors": errors},
-    )
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Catch-all handler for unhandled errors to avoid leaking system stack traces."""
-    logger.error(f"Unhandled exception on {request.url.path}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An unexpected server error occurred. Please contact support."},
-    )
-
-@app.get("/")
-def read_root():
-    """Root endpoint to check server connectivity."""
+@app.get("/health")
+async def health_check():
     return {
-        "name": "SmartPDF AI API",
         "status": "healthy",
+        "service": "AI PDF Learning Assistant API",
         "version": "1.0.0"
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.app.main:app", host="127.0.0.1", port=8000, reload=True)

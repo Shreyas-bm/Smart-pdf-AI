@@ -4,8 +4,52 @@ from typing import List, Optional
 from sqlalchemy import String, Integer, ForeignKey, Text, DateTime, JSON, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from sqlalchemy.types import TypeDecorator, CHAR
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID type.
+    Uses PostgreSQL's UUID type, otherwise uses CHAR(36), storing as stringified hex values.
+    """
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(PostgresUUID())
+        else:
+            return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name == 'postgresql':
+            return str(value)
+        else:
+            if not isinstance(value, uuid.UUID):
+                try:
+                    return uuid.UUID(str(value)).hex
+                except ValueError:
+                    return str(value)
+            else:
+                return value.hex
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if isinstance(value, uuid.UUID):
+            return value
+        if value == 0 or value == "0":
+            return uuid.UUID("00000000-0000-0000-0000-000000000000")
+        try:
+            return uuid.UUID(str(value))
+        except ValueError:
+            return value
+
 class Base(DeclarativeBase):
-    pass
+    type_annotation_map = {
+        uuid.UUID: GUID,
+    }
 
 class User(Base):
     __tablename__ = "users"

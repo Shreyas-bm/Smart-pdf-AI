@@ -26,7 +26,7 @@ class SummaryResponse(BaseModel):
 @router.get("/{document_id}/summary", response_model=SummaryResponse)
 async def get_or_create_summary(
     document_id: uuid.UUID,
-    length_type: str = Query(default="medium", regex="^(short|medium|detailed)$"),
+    length_type: str = Query(default="medium", pattern="^(short|medium|detailed)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
